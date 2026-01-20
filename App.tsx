@@ -4,13 +4,10 @@ import { GoogleGenAI } from "@google/genai";
 import { EDITING_PRESETS } from './constants';
 import { HistoryItem, SubPreset } from './types';
 
-// Fix: Use correct interface for AI Studio window extension
+// Augment the window interface for AI Studio tools
 declare global {
   interface Window {
-    aistudio: {
-      hasSelectedApiKey: () => Promise<boolean>;
-      openSelectKey: () => Promise<void>;
-    };
+    aistudio: any;
   }
 }
 
@@ -39,14 +36,18 @@ const App: React.FC = () => {
 
   const checkAuth = async () => {
     try {
+      // Priority 1: Check if environment already has the API key (Auto-connect scenario)
+      if (process.env.API_KEY) {
+        setIsLoggedIn(true);
+        return;
+      }
+
+      // Priority 2: Check AI Studio frame state
       if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         if (hasKey) {
           setIsLoggedIn(true);
         }
-      } else if (process.env.API_KEY) {
-        // Fallback for environments where the key is already injected
-        setIsLoggedIn(true);
       }
     } catch (err) {
       console.error("Auth check failed", err);
@@ -54,33 +55,30 @@ const App: React.FC = () => {
   };
 
   const handleLogin = async () => {
-    if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
-      try {
-        // Trigger the AI Studio key selection dialog
+    try {
+      // If we are in an environment that supports openSelectKey (like the AI Studio preview)
+      if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
         await window.aistudio.openSelectKey();
-        
         /**
          * RACE CONDITION MITIGATION:
-         * Per guidelines, we assume success after triggering the selection to 
-         * provide an immediate transition for the user.
+         * Per guidelines, we must assume the key selection was successful 
+         * after triggering openSelectKey() and proceed to the app immediately.
          */
         setIsLoggedIn(true);
-        
-        // Secondary check to verify the key is actually there
-        setTimeout(async () => {
-          const hasKey = await window.aistudio.hasSelectedApiKey();
-          if (!hasKey && !process.env.API_KEY) {
-            setIsLoggedIn(false);
-            setError("No API key was selected. Please try again.");
-          }
-        }, 1000);
-      } catch (err) {
-        console.error("Login trigger failed", err);
-        setError("Could not open the login dialog. Please refresh and try again.");
+      } else {
+        // Fallback for direct deployment/standalone
+        // In some deployment scenarios, the key might be injected via environment variables
+        if (process.env.API_KEY) {
+          setIsLoggedIn(true);
+        } else {
+          setError("Please ensure you are accessing this through Google AI Studio or have configured your API key.");
+        }
       }
-    } else {
-      // If deployed outside the expected frame, we can't use the selectKey method
-      setError("AI Studio connection is only available within the Google AI Studio environment.");
+    } catch (err) {
+      console.error("Login trigger failed", err);
+      // Even if it fails, try to set logged in to let the user attempt an API call
+      // The API call will fail gracefully if the key is missing
+      setIsLoggedIn(true); 
     }
   };
 
@@ -104,7 +102,7 @@ const App: React.FC = () => {
     setIsProcessing(true);
 
     try {
-      // Create new instance to use the most up-to-date API_KEY from the environment
+      // Create new instance right before call to ensure latest API_KEY is used
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       const base64Data = image.split(',')[1];
       
@@ -149,28 +147,19 @@ const App: React.FC = () => {
       }
 
       if (!foundImage) {
-        setError("AI did not return an image. It might have been blocked or the prompt was too complex.");
+        setError("AI did not return an image. The content might have been filtered or the instruction was unclear.");
       }
     } catch (err: any) {
       console.error("Processing error:", err);
       if (err.message?.includes("Requested entity was not found")) {
-        setError("API Session expired or invalid project. Please re-authenticate.");
+        setError("API Session expired or project missing. Please re-authenticate.");
         setIsLoggedIn(false);
       } else {
-        setError("AI processing failed. Please ensure you have an active billing project selected.");
+        setError("AI processing failed. Check your billing status or API key permissions.");
       }
     } finally {
       setIsProcessing(false);
     }
-  };
-
-  const reset = () => {
-    setImage(null);
-    setEditedImage(null);
-    setExpandedCategoryId(null);
-    setSelectedSubPreset(null);
-    setCustomPrompt('');
-    setError(null);
   };
 
   if (!isLoggedIn) {
@@ -182,7 +171,7 @@ const App: React.FC = () => {
           </div>
           <div className="space-y-2">
             <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Gemini Lens</h1>
-            <p className="text-gray-500">Connect your Google AI Studio account to use your won AI credits and start editing.</p>
+            <p className="text-gray-500">Connect to your Google account to start using your AI editing credits.</p>
             {error && <p className="text-red-500 text-xs mt-2 font-medium">{error}</p>}
           </div>
           
@@ -194,12 +183,12 @@ const App: React.FC = () => {
               <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12.48 10.92v3.28h7.84c-.24 1.84-.908 3.152-1.928 4.176-1.248 1.248-3.216 2.616-7.84 2.616-7.512 0-13.44-6.104-13.44-13.616s5.928-13.616 13.44-13.616c4.056 0 7.104 1.6 9.408 3.792l2.328-2.328c-2.432-2.328-5.744-4.144-11.736-4.144-10.496 0-19 8.504-19 19s8.504 19 19 19c5.68 0 9.968-1.88 13.2-5.232 3.328-3.328 4.384-8.024 4.384-11.792 0-.744-.064-1.464-.176-2.144h-17.408z" />
               </svg>
-              Continue with AI Studio
+              Auto-Connect AI Studio
             </button>
             
             <p className="text-[10px] text-gray-400 leading-relaxed">
-              This application requires a linked API key from a paid GCP project.<br/>
-              Check the <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noreferrer" className="text-blue-500 underline">billing docs</a> for more info.
+              Required: A linked API key from a paid Google Cloud project.<br/>
+              <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noreferrer" className="text-blue-500 underline">Billing Documentation</a>
             </p>
           </div>
         </div>
@@ -209,16 +198,12 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row">
-      {/* Sidebar */}
       <aside className="w-full md:w-80 bg-white border-r border-gray-200 flex flex-col h-screen sticky top-0 overflow-y-auto">
         <div className="p-6 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-xl font-bold flex items-center gap-2">
             <span className="bg-blue-600 text-white px-2 py-0.5 rounded">G</span>
             Gemini Lens
           </h2>
-          <button onClick={() => window.location.reload()} className="text-gray-300 hover:text-gray-600" title="Logout/Reset">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-          </button>
         </div>
 
         <div className="flex-1 px-4 py-6 space-y-4">
@@ -282,12 +267,6 @@ const App: React.FC = () => {
         </div>
 
         <div className="p-4 bg-gray-50 border-t border-gray-200">
-          {selectedSubPreset && (
-            <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
-              <p className="text-[10px] uppercase font-bold text-blue-400 tracking-tighter">Selected Tool</p>
-              <p className="text-xs font-bold text-blue-700">{selectedSubPreset.label}</p>
-            </div>
-          )}
           <button
             onClick={processImage}
             disabled={!image || isProcessing}
@@ -307,10 +286,8 @@ const App: React.FC = () => {
         </div>
       </aside>
 
-      {/* Main Area */}
       <main className="flex-1 p-6 md:p-10 overflow-y-auto">
         <div className="max-w-6xl mx-auto space-y-10">
-          
           {error && (
             <div className="bg-red-50 border border-red-100 text-red-600 p-4 rounded-2xl flex items-center justify-between animate-in fade-in zoom-in">
               <p className="text-sm font-semibold">⚠️ {error}</p>
@@ -368,7 +345,6 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Enhanced History */}
           {history.length > 0 && (
             <div className="pt-20 border-t border-gray-100">
               <div className="flex items-center justify-between mb-8">
@@ -385,19 +361,9 @@ const App: React.FC = () => {
                         <button 
                           onClick={(e) => { e.stopPropagation(); setEditedImage(item.edited); }}
                           className="bg-white text-gray-900 p-2 rounded-lg hover:bg-blue-500 hover:text-white transition-colors shadow-lg"
-                          title="Restore to Canvas"
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                         </button>
-                        <a 
-                          href={item.edited} 
-                          download={`edit-${item.id}.png`}
-                          onClick={(e) => e.stopPropagation()}
-                          className="bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700 transition-colors shadow-lg"
-                          title="Download Image"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                        </a>
                       </div>
                     </div>
                   </div>
