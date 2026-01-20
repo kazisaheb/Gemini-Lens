@@ -4,8 +4,8 @@ import { GoogleGenAI } from "@google/genai";
 import { EDITING_PRESETS } from './constants';
 import { HistoryItem, SubPreset } from './types';
 
-// The AIStudio type is pre-defined in the environment's global scope.
-// Using declare global here to extend it safely without conflicting with internal definitions.
+// Use interface augmentation for window.aistudio to avoid modifier mismatch and type conflicts.
+// The environment provides AIStudio type globally.
 declare global {
   interface Window {
     aistudio: any;
@@ -33,6 +33,7 @@ const App: React.FC = () => {
   }, []);
 
   const checkAuth = async () => {
+    // Standard check for API key selection presence
     if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
       const hasKey = await window.aistudio.hasSelectedApiKey();
       setIsLoggedIn(hasKey);
@@ -40,11 +41,11 @@ const App: React.FC = () => {
   };
 
   const handleLogin = async () => {
+    // Open API key selection dialog as required by guidelines for Gemini 3 and Veo-style user flows
     if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
       try {
         await window.aistudio.openSelectKey();
-        // Assume the key selection was successful after triggering openSelectKey() 
-        // to mitigate race conditions where hasSelectedApiKey might not return true immediately.
+        // Assume key selection was successful to mitigate race condition where hasSelectedApiKey doesn't update immediately
         setIsLoggedIn(true);
       } catch (err) {
         console.error("Login failed", err);
@@ -72,13 +73,13 @@ const App: React.FC = () => {
     setIsProcessing(true);
 
     try {
-      // Create a new GoogleGenAI instance right before making an API call 
-      // to ensure it always uses the most up-to-date API key from the dialog.
+      // Create new GoogleGenAI instance right before call to ensure latest API key is used
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const base64Data = image.split(',')[1];
       
       const promptText = customPrompt || (selectedSubPreset ? selectedSubPreset.prompt : "Enhance this image.");
 
+      // Using gemini-2.5-flash-image for general image editing tasks as per guidelines
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
@@ -97,9 +98,9 @@ const App: React.FC = () => {
       });
 
       let foundImage = false;
+      // Accessing response.candidates directly to find image part as per guidelines
       if (response.candidates?.[0]?.content?.parts) {
         for (const part of response.candidates[0].content.parts) {
-          // Iterate through parts to find the image part
           if (part.inlineData) {
             const newImage = `data:image/png;base64,${part.inlineData.data}`;
             setEditedImage(newImage);
@@ -123,8 +124,7 @@ const App: React.FC = () => {
       }
     } catch (err: any) {
       console.error(err);
-      // If the request fails with "Requested entity was not found.", 
-      // reset key selection state and prompt for re-authentication.
+      // Reset key selection if entity not found error occurs as per guidelines
       if (err.message?.includes("Requested entity was not found")) {
         setError("API Session expired. Please re-authenticate.");
         setIsLoggedIn(false);
