@@ -6,12 +6,12 @@ import { HistoryItem, SubPreset } from './types';
 
 // Augment window to handle the AI Studio integration
 declare global {
+  interface AIStudio {
+    hasSelectedApiKey: () => Promise<boolean>;
+    openSelectKey: () => Promise<void>;
+  }
   interface Window {
-    // Making it optional and matching the required interface to avoid conflicts
-    aistudio?: {
-      hasSelectedApiKey: () => Promise<boolean>;
-      openSelectKey: () => Promise<void>;
-    };
+    aistudio: AIStudio;
   }
 }
 
@@ -31,21 +31,21 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Check if a key is already available (e.g., if the user already connected in this session)
   useEffect(() => {
     const checkExistingConnection = async () => {
-      if (process.env.API_KEY) {
+      // Check if a key is already available in the environment
+      if (process.env.API_KEY && process.env.API_KEY !== "undefined") {
         setIsLoggedIn(true);
         return;
       }
       
-      // If we are in the AI Studio environment, check for existing selection
+      // Check using the provided bridge method
       if (window.aistudio?.hasSelectedApiKey) {
         try {
           const hasKey = await window.aistudio.hasSelectedApiKey();
           if (hasKey) setIsLoggedIn(true);
         } catch (e) {
-          console.debug("Standalone mode: aistudio bridge not available yet.");
+          console.debug("Standalone mode: aistudio bridge active but no key yet.");
         }
       }
     };
@@ -55,19 +55,15 @@ const App: React.FC = () => {
   const handleLogin = async () => {
     setError(null);
     try {
-      // Trigger the official Google AI Studio key selection dialog
       if (window.aistudio?.openSelectKey) {
+        // As per guidelines: call openSelectKey and then proceed immediately to mitigate race conditions
         await window.aistudio.openSelectKey();
-        // As per documentation, we assume success after the dialog trigger to proceed
         setIsLoggedIn(true);
       } else {
-        // Fallback: If deployed on Netlify/Standalone, we still want to let them in 
-        // to use the injected API_KEY if they've provided one or if the platform handles it.
         setIsLoggedIn(true); 
       }
     } catch (err) {
       console.error("Login failed:", err);
-      // Proceeding regardless to mitigate race conditions
       setIsLoggedIn(true);
     }
   };
@@ -92,12 +88,12 @@ const App: React.FC = () => {
     setIsProcessing(true);
 
     try {
-      // Create a fresh instance to ensure we use the current API Key from the project selection
+      // CRITICAL: Create a NEW instance right before the call to ensure it uses the most up-to-date API key
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const base64Data = image.split(',')[1];
-      
       const promptText = customPrompt || (selectedSubPreset ? selectedSubPreset.prompt : "Enhance this image.");
 
+      // Using gemini-2.5-flash-image for image editing tasks as per instructions
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
@@ -116,6 +112,7 @@ const App: React.FC = () => {
       });
 
       let foundImage = false;
+      // Iterate through parts to find the image part as recommended
       if (response.candidates?.[0]?.content?.parts) {
         for (const part of response.candidates[0].content.parts) {
           if (part.inlineData) {
@@ -136,15 +133,20 @@ const App: React.FC = () => {
       }
 
       if (!foundImage) {
-        setError("The AI finished but didn't return an image. It might be due to safety filters or an complex prompt.");
+        setError("AI completed but returned no image. Check if your prompt is too complex or violates safety guidelines.");
       }
     } catch (err: any) {
       console.error("AI processing error:", err);
-      if (err.message?.includes("Requested entity was not found") || err.message?.includes("API_KEY")) {
-        setError("Account connection expired. Please reconnect your Google Project.");
+      const msg = err.message || "";
+      
+      // Handle "Requested entity was not found" by resetting key selection
+      if (msg.includes("403") || msg.includes("billing") || msg.includes("quota")) {
+        setError("Billing Required: The selected Google Project must have an active billing account linked.");
+      } else if (msg.includes("404") || msg.includes("Requested entity was not found")) {
+        setError("Project Error: Please click 'Connect' again and ensure you select a valid Project from Google AI Studio.");
         setIsLoggedIn(false);
       } else {
-        setError("Failed to edit image. Ensure your Google Cloud Project has billing enabled for credits.");
+        setError("Editing failed. This usually happens if the selected Google Project isn't fully set up in AI Studio.");
       }
     } finally {
       setIsProcessing(false);
@@ -160,7 +162,7 @@ const App: React.FC = () => {
           </div>
           <div className="space-y-4">
             <h1 className="text-4xl font-black text-gray-900 tracking-tight">Lens AI</h1>
-            <p className="text-gray-500 text-lg font-medium leading-relaxed">Connect your Gmail to use your personal Google AI Studio credits.</p>
+            <p className="text-gray-500 text-lg font-medium leading-relaxed">Login with your Google account to use your personal AI credits.</p>
           </div>
           
           <div className="space-y-4 pt-4">
@@ -174,17 +176,18 @@ const App: React.FC = () => {
                 <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
                 <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
               </svg>
-              Connect with Google
+              Sign in with Google
             </button>
             
             <div className="pt-2">
+              <p className="text-[10px] text-gray-400 font-bold mb-2">IMPORTANT REQUIREMENT</p>
               <a 
                 href="https://ai.google.dev/gemini-api/docs/billing" 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="text-xs text-blue-500 font-bold hover:underline"
               >
-                Learn how Google AI Studio credits work
+                You must have a Paid Project selected to use Image Models
               </a>
             </div>
           </div>
@@ -194,8 +197,6 @@ const App: React.FC = () => {
               {error}
             </div>
           )}
-          
-          <div className="pt-8 opacity-20 font-black text-[10px] uppercase tracking-[0.2em]">Deployable Version • Gemini 2.5</div>
         </div>
       </div>
     );
@@ -203,7 +204,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-white flex flex-col md:flex-row">
-      {/* Side Navigation */}
       <aside className="w-full md:w-80 bg-gray-50 border-r border-gray-200 flex flex-col h-screen sticky top-0 z-30 shadow-sm">
         <div className="p-8 border-b border-gray-200 bg-white">
           <div className="flex items-center justify-between">
@@ -211,10 +211,12 @@ const App: React.FC = () => {
               <span className="bg-black text-white w-8 h-8 flex items-center justify-center rounded-lg text-sm">G</span>
               LENS AI
             </h2>
-            <div className="flex items-center gap-1 bg-green-50 px-2 py-1 rounded-full border border-green-100">
-              <span className="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
-              <span className="text-[8px] font-black text-green-700 uppercase">Live</span>
-            </div>
+            <button 
+              onClick={() => setIsLoggedIn(false)}
+              className="text-[8px] font-black text-gray-400 hover:text-red-500 uppercase transition-colors"
+            >
+              Switch Account
+            </button>
           </div>
         </div>
 
@@ -301,16 +303,23 @@ const App: React.FC = () => {
         </div>
       </aside>
 
-      {/* Workspace */}
       <main className="flex-1 p-8 md:p-12 overflow-y-auto bg-white">
         <div className="max-w-7xl mx-auto space-y-12">
           {error && (
-            <div className="bg-red-50 border-2 border-red-100 text-red-700 p-6 rounded-[2.5rem] flex items-center justify-between animate-in slide-in-from-top-4 duration-300 shadow-sm">
-              <p className="font-bold flex items-center gap-4">
-                <span className="bg-red-500 text-white w-6 h-6 flex items-center justify-center rounded-full text-[10px]">!</span>
-                {error}
-              </p>
-              <button onClick={() => setError(null)} className="font-black hover:opacity-50 px-2">CLOSE</button>
+            <div className="bg-red-50 border-2 border-red-100 text-red-700 p-6 rounded-[2.5rem] animate-in slide-in-from-top-4 duration-300 shadow-sm">
+              <div className="flex items-start justify-between">
+                <div className="flex items-start gap-4">
+                  <span className="bg-red-500 text-white w-6 h-6 shrink-0 flex items-center justify-center rounded-full text-[10px] mt-1 font-black">!</span>
+                  <div>
+                    <p className="font-black text-lg leading-tight mb-2">Action Required</p>
+                    <p className="font-medium text-sm leading-relaxed opacity-80">{error}</p>
+                    <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="inline-block mt-4 text-xs font-black underline hover:opacity-70">
+                      VIEW BILLING DOCS
+                    </a>
+                  </div>
+                </div>
+                <button onClick={() => setError(null)} className="font-black text-[10px] hover:opacity-50 px-2 py-1 bg-red-100 rounded-lg">DISMISS</button>
+              </div>
             </div>
           )}
 
@@ -325,15 +334,15 @@ const App: React.FC = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" />
                 </svg>
               </div>
-              <h2 className="text-3xl font-black text-gray-900 z-10 tracking-tight">Drop Image Here</h2>
-              <p className="text-gray-400 mt-4 text-lg font-medium z-10">Upload a photo to unlock AI editing</p>
+              <h2 className="text-3xl font-black text-gray-900 z-10 tracking-tight">Select Photo</h2>
+              <p className="text-gray-400 mt-4 text-lg font-medium z-10">Upload an image to start editing with AI</p>
               <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
             </div>
           ) : (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-12">
               <div className="space-y-6">
                 <div className="flex items-center justify-between px-4">
-                  <h3 className="font-black text-gray-400 uppercase tracking-widest text-[10px]">Input Source</h3>
+                  <h3 className="font-black text-gray-400 uppercase tracking-widest text-[10px]">Source</h3>
                   <button onClick={() => fileInputRef.current?.click()} className="text-[10px] text-blue-600 font-black bg-blue-50 px-4 py-2 rounded-full hover:bg-blue-100 transition-colors">REPLACE</button>
                 </div>
                 <div className="aspect-square bg-gray-50 rounded-[4rem] overflow-hidden shadow-inner border border-gray-100 p-8 flex items-center justify-center">
@@ -343,7 +352,7 @@ const App: React.FC = () => {
 
               <div className="space-y-6">
                 <div className="flex items-center justify-between px-4">
-                  <h3 className="font-black text-gray-400 uppercase tracking-widest text-[10px]">Gemini Enhanced</h3>
+                  <h3 className="font-black text-gray-400 uppercase tracking-widest text-[10px]">Preview</h3>
                   {editedImage && (
                     <a href={editedImage} download="gemini-edit.png" className="text-[10px] bg-black text-white px-6 py-2 rounded-full font-black hover:bg-gray-800 transition-all active:scale-95 shadow-lg">DOWNLOAD</a>
                   )}
@@ -352,44 +361,18 @@ const App: React.FC = () => {
                   {isProcessing ? (
                     <div className="absolute inset-0 z-10 bg-white/80 backdrop-blur-xl flex flex-col items-center justify-center">
                       <div className="w-20 h-20 border-8 border-gray-100 rounded-full border-t-black animate-spin mb-6 shadow-xl" />
-                      <p className="font-black text-gray-900 text-2xl tracking-tight">Enhancing...</p>
-                      <p className="text-xs text-gray-400 font-bold mt-2 uppercase tracking-widest animate-pulse">Computing Matrix</p>
+                      <p className="font-black text-gray-900 text-2xl tracking-tight">Processing...</p>
+                      <p className="text-xs text-gray-400 font-bold mt-2 uppercase tracking-widest animate-pulse">Running Gemini Vision</p>
                     </div>
                   ) : editedImage ? (
                     <img src={editedImage} alt="Edited" className="max-w-full max-h-full object-contain rounded-3xl animate-in zoom-in-95 fade-in duration-700" />
                   ) : (
                     <div className="text-center opacity-30 px-12">
                       <div className="text-7xl mb-8">💎</div>
-                      <p className="text-xl font-black text-gray-800 leading-tight">Ready to transform. Choose a tool to begin.</p>
+                      <p className="text-xl font-black text-gray-800 leading-tight">Choose a preset or write a command below.</p>
                     </div>
                   )}
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* Activity Strip */}
-          {history.length > 0 && (
-            <div className="pt-16">
-              <div className="flex items-center gap-6 mb-10">
-                <h3 className="text-3xl font-black text-gray-900 tracking-tighter">History</h3>
-                <div className="h-0.5 flex-1 bg-gray-100 rounded-full"></div>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-10">
-                {history.map((item) => (
-                  <div key={item.id} className="group relative aspect-square bg-gray-50 rounded-[3rem] overflow-hidden shadow-md hover:shadow-2xl transition-all cursor-pointer border-2 border-transparent hover:border-black/5">
-                    <img src={item.edited} alt="History" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/80 opacity-0 group-hover:opacity-100 transition-all flex flex-col items-center justify-center p-6 text-center">
-                      <p className="text-[10px] text-white font-bold leading-tight mb-4 line-clamp-3">"{item.prompt}"</p>
-                      <button 
-                        onClick={() => setEditedImage(item.edited)}
-                        className="bg-white text-gray-900 px-6 py-2 rounded-2xl text-[10px] font-black hover:bg-blue-600 hover:text-white transition-all shadow-lg"
-                      >
-                        REVERT
-                      </button>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           )}
