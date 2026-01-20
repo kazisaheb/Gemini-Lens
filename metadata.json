@@ -1,0 +1,7 @@
+{
+  "name": "Gemini Lens - AI Image Editor",
+  "description": "A professional AI image editing application powered by Gemini 2.5 Flash, featuring smart presets for style transfer, restoration, and custom object manipulation.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
